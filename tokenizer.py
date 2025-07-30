@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import two_max_pairs
 import numpy as np
 from typing import List, Dict, Tuple
+import atexit
 
 number_of_tokens = 1000
 
@@ -318,6 +319,9 @@ class RegexTokenizer:
         ids = np.array(ids_padded, dtype=np.int32)
 
         number_of_merges = vocab_size-256
+        two_max_pairs.allocate_global_arrays()
+        atexit.register(two_max_pairs.deallocate_global_arrays)
+        
         for i in tqdm(range(number_of_merges)):
             # print("Input length: ",len(ids))
             idx = 256 + i

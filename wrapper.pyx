@@ -4,12 +4,36 @@ cdef extern from "two_max_pairs.cuh":
 
     void replace_single_most_frequent(int* data, const int* offsets, const int* lengths, const int num_elements, const int num_chunks, int* pair, int new_value )
 
+    void allocate_pairs_counter()
+    void* get_pairs_counter()
+    void free_pairs_counter()
+
     int MAX_PAIR_KEY
     int BIT_MASK
     int BIT_OFFSET
 
 import numpy as np
 cimport numpy as np
+
+def allocate_global_arrays():
+    """
+    Allocate global arrays for pair counting.
+    This function should be called before using any CUDA functions that require these arrays.
+    """
+    allocate_pairs_counter()
+
+def get_pairs_counter():
+    """
+    Get a pointer to the global array for pair counting.
+    """
+    return get_pairs_counter()
+
+def free_global_arrays():
+    """Free the global arrays allocated for pair counting.
+    This function should be called when the arrays are no longer needed to avoid memory leaks.
+    """
+    free_pairs_counter()
+
 
 def cuda_count_pair_frequencies(np.ndarray[np.int32_t, ndim=2] data):
 

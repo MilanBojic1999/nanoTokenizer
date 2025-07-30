@@ -14,6 +14,31 @@
 // #define MAX_PAIR_KEY 1048576  // Assuming 10-bit tokens: 1024 * 1024
 // #define MAX_PAIR_KEY 65536  // Assuming 8-bit tokens: 256 * 256
 
+static uint_t* pairs_counter = nullptr;
+
+extern "C" void allocate_pairs_counter() {
+    if (pairs_counter == nullptr) {
+        cudaError_t err cudaMalloc(&pairs_counter, MAX_PAIR_KEY * sizeof(uint_t));
+        if (err != cudaSuccess) {
+            fprintf(stderr, "CUDA malloc failed: %s\n", cudaGetErrorString(err));
+        } else {
+            fprintf("Allocated pairs_counter with size %d\n", MAX_PAIR_KEY * sizeof(uint_t));
+        }
+    }
+}
+
+extern "C" void* get_pairs_counter() {
+    return pairs_counter;
+}
+
+extern "C" void free_pairs_counter() {
+    if (pairs_counter != nullptr) {
+        cudaFree(pairs_counter);
+        pairs_counter = nullptr;
+        fprintf("Freed pairs_counter\n");
+    }
+}
+
 __global__ void count_pair_frequencies_kernel(
     int* data,       // Flattened list of all bites
     const int* offsets,    // Start of each chunk
@@ -52,19 +77,16 @@ void count_pair_frequencies(int* data,       // Flattened list of all bites
                              const int* lengths,    // Length of each chunk
                              const int num_elements, // Number of elements
                              const int num_chunks, // Number of chunks
-                             int* global_pair_counts, // Size: MAX_PAIR_KEY
                              int* max_pair, // Max pair to replace with new value
                              int* frequency // Frequency of the most frequent pair
 ) {
     
     int *d_data, *d_offsets, *d_lengths;
-    int *d_counts;
     int *cn;
 
     cudaMalloc(&d_data, num_elements * sizeof(int));
     cudaMalloc(&d_offsets, num_chunks * sizeof(int));
     cudaMalloc(&d_lengths, num_chunks * sizeof(int));
-    cudaMalloc(&d_counts, MAX_PAIR_KEY * sizeof(int));
     cudaMalloc(&cn,sizeof(int));
 
     cudaMemcpy(d_data, data, num_elements * sizeof(int), cudaMemcpyHostToDevice);
@@ -72,19 +94,19 @@ void count_pair_frequencies(int* data,       // Flattened list of all bites
     cudaMemcpy(d_lengths, lengths, num_chunks * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(cn, &num_chunks, sizeof(int), cudaMemcpyHostToDevice);
 
-    cudaMemset(d_counts, 0, MAX_PAIR_KEY * sizeof(int));
+    cudaMemset(global_pair_counts, 0, MAX_PAIR_KEY * sizeof(int));
 
 
     int threadsPerBlock = 128;
     int blocksPerGrid = (num_chunks + threadsPerBlock - 1) / threadsPerBlock;
     std::cout << "Launching kernel with\n" ;
 
-    count_pair_frequencies_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_data, d_offsets, d_lengths, cn, d_counts);
+    count_pair_frequencies_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_data, d_offsets, d_lengths, cn, global_pair_counts);
     cudaDeviceSynchronize();
 
     std::cout << "Kernel execution finished\n";
 
-    thrust::device_ptr<int> d_counts_ptr(d_counts);
+    thrust::device_ptr<int> d_counts_ptr(global_pair_counts);
     thrust::device_ptr<int> max_element_ptr = thrust::max_element(d_counts_ptr, d_counts_ptr + MAX_PAIR_KEY);
     std::cout << "Max element found\n";
     int max_frequency;
@@ -106,7 +128,6 @@ void count_pair_frequencies(int* data,       // Flattened list of all bites
     cudaFree(d_data);
     cudaFree(d_offsets);
     cudaFree(d_lengths);
-    cudaFree(d_counts);
     cudaFree(cn);
 
 }
