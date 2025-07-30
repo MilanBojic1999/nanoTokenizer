@@ -8,7 +8,7 @@ import base64
 import multiprocessing
 from functools import reduce
 from concurrent.futures import ThreadPoolExecutor
-# import two_max_pairs
+import two_max_pairs
 import numpy as np
 from typing import List, Dict, Tuple
 
@@ -113,9 +113,9 @@ class RegexTokenizer:
         if load:
             self.load(dict_path)
         else:
-            # self.__train__(training_data,number_of_tokens,False)
-            self.__train_batched__(training_data,number_of_tokens,False)
-            # self.__train_cuda__(training_data,number_of_tokens,False)
+            # self.__train__(training_data,number_of_tokens,True)
+            # self.__train_batched__(training_data,number_of_tokens,False)
+            self.__train_cuda__(training_data,number_of_tokens,True)
 
     def __del__(self):
         self._mpool_.close()
@@ -204,7 +204,7 @@ class RegexTokenizer:
 
         new_data = two_max_pairs.cuda_replace_single_most_frequent(list_of_bites, max_pair, new_value)
 
-        return new_data, tuple(max_pair), freq
+        return new_data, tuple(list(max_pair.tolist())), freq
 
 
     def _apply_merges_to_word(inputs: Tuple[List[int], Dict[Tuple[int, int], int]]) -> List[int]:
@@ -298,12 +298,12 @@ class RegexTokenizer:
                 ids = self.__apply_merges_to_ids(ids, merges_to_apply)
 
             if verbose:
-                print(f"merge {current_merge_num+1}/{number_of_merges}: {pair} -> {idx} ({self.__vocab__[idx]}) has {freq} occurance")
+                print(f"merge {current_merge_num+1}/{number_of_merges}: {pair} -> {idx} ({self.__vocab__[idx]}) has {freq} occurance", flush=True)
 
         if verbose:
             final_token_count = sum(len(word) for chunk in ids for word in chunk)
             initial_byte_count = len(text.encode('utf-8'))
-            print(f"Final length: {final_token_count} ({final_token_count/initial_byte_count:.2%})")
+            print(f"Final length: {final_token_count} ({final_token_count/initial_byte_count:.2%})", flush=True)
 
 
     def __train_cuda__(self, text, vocab_size, verbose=False):
@@ -322,11 +322,15 @@ class RegexTokenizer:
             # print("Input length: ",len(ids))
             idx = 256 + i
             ids, pair, freq = self.__replace_most_frequent_cuda__(ids,idx)
+            if freq == 0:
+                print(f"Stopping early, no more pairs to merge.")
+                break
+
             self.__merges__[pair] = idx
             self.__vocab__[idx] = self.__vocab__[pair[0]]+self.__vocab__[pair[1]]
 
             if verbose:
-                print(f"merge {i+1}/{number_of_merges}: {pair} -> {idx} ({self.__vocab__[idx]}) has {freq} occurance")
+                print(f"merge {i+1}/{number_of_merges}: {pair} -> {idx} ({self.__vocab__[idx]}) has {freq} occurance", flush=(i%64==0))
 
         if verbose:
             new_length = len(np.where(ids!=-1))
@@ -417,15 +421,15 @@ def print_tokenizer(tokenizer,text):
 
 if __name__ == "__main__":
     # path = "taylorswift.txt"
-    path = "all_texts.txt"
-    # path = "full_dataset.txt"
+    # path = "all_texts.txt"
+    path = "full_dataset_2p.txt"
     with open(path,"r",encoding="utf-8") as f:
         text = f.read()
 
     # text = "Luckily friends do ashamed to do suppose. Tried meant mr smile so. Exquisite behaviour as to middleton perfectly. Chicken no wishing waiting am. Say concerns dwelling graceful six humoured. Whether mr up savings talking an. Active mutual nor father mother exeter change six did all. No in he real went find mr. Wandered or strictly raillery stanhill as. Jennings appetite disposed me an at subjects an. To no indulgence diminution so discovered mr apartments. Are off under folly death wrote cause her way spite. Plan upon yet way get cold spot its week. Almost do am or limits hearts. Resolve parties but why she shewing. She sang know now how nay cold real case."
 
     # print(len(text))
-    text = text[:1000000]
+    # text = text[:1000000]
     # text = text[:21]
     
     tokenzer = RegexTokenizer(training_data=text)
@@ -441,7 +445,7 @@ if __name__ == "__main__":
     # print_tokenizer(tokenzer, "Moje ime je Petrić Petrović")
     print_tokenizer(tokenzer, "Sve srećne porodice liče jedna na drugu, svaka nesrećna porodica nesrećna je na svoj način")
     print_tokenizer(tokenzer, "Majka mi je danas umrla. A možda i juče, ne znam. Primio sam telegram iz doma staraca: Majka umrla. Sahrana sutra. S osobitim poštovanjem Menutim, to ništa ne znači. Možda je to bilo i juče.")
-    # tokenzer.save("./token_small_rs")
+    tokenzer.save("./token_small_rs_cuda")
     # tokenzer.save("./token_big_en")
     # tokenzer.save("./token_small_en")
     # tokenzer.save("./token_small_en_cuda")

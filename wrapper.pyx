@@ -39,17 +39,6 @@ def cuda_count_pair_frequencies(np.ndarray[np.int32_t, ndim=2] data):
     return max_pair, ret_frequency
 
 
-def move_neg_ones_to_end(arr):
-    result = []
-    for row in arr:
-        row = np.array(row)
-        non_neg_ones = row[row != -1]
-        neg_ones = row[row == -1]
-        new_row = np.concatenate([non_neg_ones, neg_ones])
-        result.append(new_row)
-    return np.array(result)
-
-
 def cuda_replace_single_most_frequent(np.ndarray[np.int32_t, ndim=2] data, np.ndarray[np.int32_t, ndim=1] pair, int new_value):
 
     cdef np.ndarray[np.int32_t, ndim=1] flat_data = data.flatten()
@@ -71,17 +60,11 @@ def cuda_replace_single_most_frequent(np.ndarray[np.int32_t, ndim=2] data, np.nd
     cdef tuple shape_tuple = tuple([data.shape[0], data.shape[1]])
 
 
-    tmp_data = flat_data.reshape(shape_tuple)
-    new_data = tmp_data
-
-    # new_data = np.delete(new_data, np.where(new_data == -1)[0])
-    new_data = move_neg_ones_to_end(new_data)
+    # The CUDA function now compacts and pads with -1, so the slow Python-based move is no longer needed.
+    new_data = flat_data.reshape(shape_tuple)
     return new_data
 
     
 
 
     
-
-
-

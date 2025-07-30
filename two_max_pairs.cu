@@ -4,6 +4,8 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <thrust/device_ptr.h>
+#include <thrust/extrema.h>
 #include "two_max_pairs.cuh"
 
 #define MAX_PAIR_KEY 268435456  // Assuming 14-bit tokens: 16384 * 16384
@@ -56,7 +58,8 @@ void count_pair_frequencies(int* data,       // Flattened list of all bites
 ) {
     
     int *d_data, *d_offsets, *d_lengths;
-    int *d_counts, *cn;
+    int *d_counts;
+    int *cn;
 
     cudaMalloc(&d_data, num_elements * sizeof(int));
     cudaMalloc(&d_offsets, num_chunks * sizeof(int));
@@ -69,31 +72,33 @@ void count_pair_frequencies(int* data,       // Flattened list of all bites
     cudaMemcpy(d_lengths, lengths, num_chunks * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(cn, &num_chunks, sizeof(int), cudaMemcpyHostToDevice);
 
+    cudaMemset(d_counts, 0, MAX_PAIR_KEY * sizeof(int));
+
+
     int threadsPerBlock = 128;
     int blocksPerGrid = (num_chunks + threadsPerBlock - 1) / threadsPerBlock;
+    std::cout << "Launching kernel with\n" ;
 
     count_pair_frequencies_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_data, d_offsets, d_lengths, cn, d_counts);
     cudaDeviceSynchronize();
 
-    cudaMemcpy(global_pair_counts, d_counts, MAX_PAIR_KEY * sizeof(int), cudaMemcpyDeviceToHost);
+    std::cout << "Kernel execution finished\n";
 
-    int max_frequency = 0;
+    thrust::device_ptr<int> d_counts_ptr(d_counts);
+    thrust::device_ptr<int> max_element_ptr = thrust::max_element(d_counts_ptr, d_counts_ptr + MAX_PAIR_KEY);
+    std::cout << "Max element found\n";
+    int max_frequency;
+    cudaMemcpy(&max_frequency, max_element_ptr.get(), sizeof(int), cudaMemcpyDeviceToHost);
 
-    for (int key = 0; key < MAX_PAIR_KEY; ++key) {
-        if (global_pair_counts[key] > 0) {
-            // int a = key >> 8;
-            // int b = key & 0xFF;
-            // int a = key >> 10;  // Adjusted for 10-bit tokens
-            // int b = key & 0x3FF;  // Adjusted for 10-bit tokens
-            int a = key >> BIT_OFFSET;  // Adjusted for 14-bit tokens
-            int b = key & BIT_MASK;  // Adjusted for 14-bit tokens
-            // std::cout << "(" << a << ", " << b << ") -> " << global_pair_counts[key] << "\n";
-            if (global_pair_counts[key] > max_frequency) {
-                max_frequency = global_pair_counts[key];
-                max_pair[0] = a;
-                max_pair[1] = b;
-            }
-        }
+    if (max_frequency > 0) {
+        int key = max_element_ptr - d_counts_ptr;
+        int a = key >> BIT_OFFSET;
+        int b = key & BIT_MASK;
+        max_pair[0] = a;
+        max_pair[1] = b;
+    } else {
+        max_pair[0] = -1; // Indicate no pairs found
+        max_pair[1] = -1;
     }
 
     frequency[0] = max_frequency;
@@ -104,6 +109,34 @@ void count_pair_frequencies(int* data,       // Flattened list of all bites
     cudaFree(d_counts);
     cudaFree(cn);
 
+}
+
+__global__ void compact_kernel(int* data, const int* offsets, int* lengths, const int* num_chunks) {
+    int chunk_id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (chunk_id >= *num_chunks) {
+        return;
+    }
+
+    int offset = offsets[chunk_id];
+    int length = lengths[chunk_id];
+    if (length == 0) return;
+
+    int write_ptr = offset;
+    for (int read_ptr = offset; read_ptr < offset + length; ++read_ptr) {
+        if (data[read_ptr] != -1) {
+            if (write_ptr != read_ptr) {
+                data[write_ptr] = data[read_ptr];
+            }
+            write_ptr++;
+        }
+    }
+    int new_length = write_ptr - offset;
+
+    // Pad rest of original chunk with -1
+    for (int i = write_ptr; i < offset + length; ++i) {
+        data[i] = -1;
+    }
+    lengths[chunk_id] = new_length;
 }
 
 __global__ void replace_single_most_frequent_kernel(
@@ -175,15 +208,15 @@ void replace_single_most_frequent(int* data,       // Flattened list of all bite
     replace_single_most_frequent_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_data, d_offsets, d_lengths, cn, max_pair, new_value_cuda);
     cudaDeviceSynchronize();
 
+    compact_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_data, d_offsets, d_lengths, cn);
+    cudaDeviceSynchronize();
+
     cudaMemcpy(data, d_data, num_elements * sizeof(int), cudaMemcpyDeviceToHost);
 
     cudaFree(d_data);
     cudaFree(d_offsets);
     cudaFree(d_lengths);
-    cudaFree(d_counts);
     cudaFree(cn);
-    cudaFree(max_pair);
-    cudaFree(new_value_cuda);
 
 }
 

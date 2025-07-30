@@ -2,6 +2,8 @@
 #define TWO_MAX_PAIRS_CUH
 
 #include <cuda_runtime.h>
+#include <thrust/device_ptr.h>
+#include <thrust/extrema.h>
 
 #define MAX_PAIR_KEY 268435456  // Assuming 14-bit tokens: 16384 * 16384
 #define BIT_MASK 0x3FFF  // Mask for 14-bit tokens
