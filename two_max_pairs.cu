@@ -14,15 +14,17 @@
 // #define MAX_PAIR_KEY 1048576  // Assuming 10-bit tokens: 1024 * 1024
 // #define MAX_PAIR_KEY 65536  // Assuming 8-bit tokens: 256 * 256
 
-static uint_t* pairs_counter = nullptr;
+typedef int pair_int;
+
+static pair_int* pairs_counter = nullptr;
 
 extern "C" void allocate_pairs_counter() {
     if (pairs_counter == nullptr) {
-        cudaError_t err cudaMalloc(&pairs_counter, MAX_PAIR_KEY * sizeof(uint_t));
+        cudaError_t err = cudaMalloc(&pairs_counter, MAX_PAIR_KEY * sizeof(pair_int));
         if (err != cudaSuccess) {
             fprintf(stderr, "CUDA malloc failed: %s\n", cudaGetErrorString(err));
         } else {
-            fprintf("Allocated pairs_counter with size %d\n", MAX_PAIR_KEY * sizeof(uint_t));
+            printf("Allocated pairs_counter with size %ld\n", MAX_PAIR_KEY * sizeof(pair_int));
         }
     }
 }
@@ -35,7 +37,7 @@ extern "C" void free_pairs_counter() {
     if (pairs_counter != nullptr) {
         cudaFree(pairs_counter);
         pairs_counter = nullptr;
-        fprintf("Freed pairs_counter\n");
+        printf("Freed pairs_counter\n");
     }
 }
 
@@ -44,7 +46,7 @@ __global__ void count_pair_frequencies_kernel(
     const int* offsets,    // Start of each chunk
     const int* lengths,    // Length of each chunk
     const int* num_chunks, // Number of chunks
-    int* global_pair_counts // Size: MAX_PAIR_KEY
+    pair_int* global_pair_counts // Size: MAX_PAIR_KEY
 ) {
     int chunk_id = blockIdx.x * blockDim.x + threadIdx.x;
     // printf("Thread %d processing chunk %d (GridDim (%d %d), BlockDim (%d %d))\n", threadIdx.x, chunk_id, gridDim.x, gridDim.y, blockDim.x, blockDim.y);
@@ -94,19 +96,19 @@ void count_pair_frequencies(int* data,       // Flattened list of all bites
     cudaMemcpy(d_lengths, lengths, num_chunks * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(cn, &num_chunks, sizeof(int), cudaMemcpyHostToDevice);
 
-    cudaMemset(global_pair_counts, 0, MAX_PAIR_KEY * sizeof(int));
+    cudaMemset(pairs_counter, 0, MAX_PAIR_KEY * sizeof(pair_int));
 
 
     int threadsPerBlock = 128;
     int blocksPerGrid = (num_chunks + threadsPerBlock - 1) / threadsPerBlock;
     std::cout << "Launching kernel with\n" ;
 
-    count_pair_frequencies_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_data, d_offsets, d_lengths, cn, global_pair_counts);
+    count_pair_frequencies_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_data, d_offsets, d_lengths, cn, pairs_counter);
     cudaDeviceSynchronize();
 
     std::cout << "Kernel execution finished\n";
 
-    thrust::device_ptr<int> d_counts_ptr(global_pair_counts);
+    thrust::device_ptr<int> d_counts_ptr(pairs_counter);
     thrust::device_ptr<int> max_element_ptr = thrust::max_element(d_counts_ptr, d_counts_ptr + MAX_PAIR_KEY);
     std::cout << "Max element found\n";
     int max_frequency;
@@ -302,7 +304,6 @@ int main(int argc, char *argv[]) {
                              host_lengths.data(), 
                              host_data.size(), 
                              host_offsets.size(), 
-                             host_pairs.data(),
                              most_frequent_pair.data(),
                              &max_frequency);
 

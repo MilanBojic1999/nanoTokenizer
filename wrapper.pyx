@@ -1,12 +1,13 @@
 from libc.stdlib cimport malloc, free
 cdef extern from "two_max_pairs.cuh":
-    void count_pair_frequencies(int* data, const int* offsets, const int* lengths, const int num_elements, const int num_chunks, int* global_pair_counts, int* max_pair, int* frequency )
-
-    void replace_single_most_frequent(int* data, const int* offsets, const int* lengths, const int num_elements, const int num_chunks, int* pair, int new_value )
 
     void allocate_pairs_counter()
     void* get_pairs_counter()
     void free_pairs_counter()
+
+    void count_pair_frequencies(int* data, const int* offsets, const int* lengths, const int num_elements, const int num_chunks, int* max_pair, int* frequency )
+
+    void replace_single_most_frequent(int* data, const int* offsets, const int* lengths, const int num_elements, const int num_chunks, int* pair, int new_value )
 
     int MAX_PAIR_KEY
     int BIT_MASK
@@ -53,7 +54,7 @@ def cuda_count_pair_frequencies(np.ndarray[np.int32_t, ndim=2] data):
     cdef np.ndarray[np.int32_t, ndim=1] max_pair = np.zeros(2, dtype=np.int32)
     cdef int *frequency = <int*>malloc(sizeof(int))
 
-    count_pair_frequencies(<int*>flat_data.data, <int*>offsets.data, <int*>lengths.data, num_elements, num_chunks, <int*>global_pair_counts.data, <int*>max_pair.data, frequency)
+    count_pair_frequencies(<int*>flat_data.data, <int*>offsets.data, <int*>lengths.data, num_elements, num_chunks, <int*>max_pair.data, frequency)
     
     # print(type(frequency))
     # print(global_pair_counts)

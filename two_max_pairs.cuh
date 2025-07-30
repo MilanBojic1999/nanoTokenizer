@@ -9,12 +9,16 @@
 #define BIT_MASK 0x3FFF  // Mask for 14-bit tokens
 #define BIT_OFFSET 14
 
+extern "C" void allocate_pairs_counter();
+extern "C" void* get_pairs_counter();
+extern "C" void free_pairs_counter();
+
+
 void count_pair_frequencies(int* data,       // Flattened list of all bites
                              const int* offsets,    // Start of each chunk
                              const int* lengths,    // Length of each chunk
                              const int num_elements, // Number of elements
                              const int num_chunks, // Number of chunks
-                             int* global_pair_counts, // Size: MAX_PAIR_KEY
                              int* max_pair, // Max pair to replace with new value
                              int* frequency // Frequency of the max pair
 

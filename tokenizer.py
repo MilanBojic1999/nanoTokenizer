@@ -320,7 +320,7 @@ class RegexTokenizer:
 
         number_of_merges = vocab_size-256
         two_max_pairs.allocate_global_arrays()
-        atexit.register(two_max_pairs.deallocate_global_arrays)
+        atexit.register(two_max_pairs.free_global_arrays)
         
         for i in tqdm(range(number_of_merges)):
             # print("Input length: ",len(ids))
@@ -426,14 +426,14 @@ def print_tokenizer(tokenizer,text):
 if __name__ == "__main__":
     # path = "taylorswift.txt"
     # path = "all_texts.txt"
-    path = "full_dataset_2p.txt"
+    path = "full_dataset_1p.txt"
     with open(path,"r",encoding="utf-8") as f:
         text = f.read()
 
     # text = "Luckily friends do ashamed to do suppose. Tried meant mr smile so. Exquisite behaviour as to middleton perfectly. Chicken no wishing waiting am. Say concerns dwelling graceful six humoured. Whether mr up savings talking an. Active mutual nor father mother exeter change six did all. No in he real went find mr. Wandered or strictly raillery stanhill as. Jennings appetite disposed me an at subjects an. To no indulgence diminution so discovered mr apartments. Are off under folly death wrote cause her way spite. Plan upon yet way get cold spot its week. Almost do am or limits hearts. Resolve parties but why she shewing. She sang know now how nay cold real case."
 
     # print(len(text))
-    # text = text[:1000000]
+    # text = text[:2**15]
     # text = text[:21]
     
     tokenzer = RegexTokenizer(training_data=text)
