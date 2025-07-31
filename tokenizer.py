@@ -205,6 +205,8 @@ class RegexTokenizer:
 
         new_data = two_max_pairs.cuda_replace_single_most_frequent(list_of_bites, max_pair, new_value)
 
+        print(new_data)
+
         return new_data, tuple(list(max_pair.tolist())), freq
 
 
@@ -434,7 +436,7 @@ if __name__ == "__main__":
 
     # print(len(text))
     # text = text[:2**15]
-    # text = text[:21]
+    text = text[:64]
     
     tokenzer = RegexTokenizer(training_data=text)
     # tokenzer = RegexTokenizer(True, dict_path="./token_small_rs")

@@ -23,11 +23,6 @@ def allocate_global_arrays():
     """
     allocate_pairs_counter()
 
-def get_pairs_counter():
-    """
-    Get a pointer to the global array for pair counting.
-    """
-    return get_pairs_counter()
 
 def free_global_arrays():
     """Free the global arrays allocated for pair counting.
@@ -50,7 +45,6 @@ def cuda_count_pair_frequencies(np.ndarray[np.int32_t, ndim=2] data):
         lengths[ind] = el.shape[0]
         current_offset += el.shape[0]
 
-    cdef np.ndarray[np.int32_t, ndim=1] global_pair_counts = np.zeros(MAX_PAIR_KEY, dtype=np.int32)
     cdef np.ndarray[np.int32_t, ndim=1] max_pair = np.zeros(2, dtype=np.int32)
     cdef int *frequency = <int*>malloc(sizeof(int))
 
