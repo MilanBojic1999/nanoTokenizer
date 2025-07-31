@@ -101,16 +101,23 @@ void count_pair_frequencies(int* data,       // Flattened list of all bites
 
     int threadsPerBlock = 128;
     int blocksPerGrid = (num_chunks + threadsPerBlock - 1) / threadsPerBlock;
-    std::cout << "Launching kernel with\n" ;
+    // std::cout << "Launching kernel with\n" ;
 
     count_pair_frequencies_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_data, d_offsets, d_lengths, cn, pairs_counter);
     cudaDeviceSynchronize();
 
-    std::cout << "Kernel execution finished\n";
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA kernel error: %s\n", cudaGetErrorString(err));
+    }
+
+
+    // std::cout << "Kernel execution finished\n";
 
     thrust::device_ptr<int> d_counts_ptr(pairs_counter);
     thrust::device_ptr<int> max_element_ptr = thrust::max_element(d_counts_ptr, d_counts_ptr + MAX_PAIR_KEY);
-    std::cout << "Max element found\n";
+    
+    // std::cout << "Max element found\n";
     int max_frequency;
     cudaMemcpy(&max_frequency, max_element_ptr.get(), sizeof(int), cudaMemcpyDeviceToHost);
 
@@ -208,12 +215,11 @@ void replace_single_most_frequent(int* data,       // Flattened list of all bite
 ) {
     
     int *d_data, *d_offsets, *d_lengths;
-    int *d_counts, *cn, *max_pair, *new_value_cuda;
+    int *cn, *max_pair, *new_value_cuda;
 
     cudaMalloc(&d_data, num_elements * sizeof(int));
     cudaMalloc(&d_offsets, num_chunks * sizeof(int));
     cudaMalloc(&d_lengths, num_chunks * sizeof(int));
-    cudaMalloc(&d_counts, MAX_PAIR_KEY * sizeof(int));
     cudaMalloc(&max_pair, 2 * sizeof(int));
     cudaMalloc(&cn,sizeof(int));
     cudaMalloc(&new_value_cuda,sizeof(int));
@@ -240,6 +246,8 @@ void replace_single_most_frequent(int* data,       // Flattened list of all bite
     cudaFree(d_offsets);
     cudaFree(d_lengths);
     cudaFree(cn);
+    cudaFree(max_pair);
+    cudaFree(new_value_cuda);
 
 }
 
@@ -440,7 +448,7 @@ int old_main(int argc, char *argv[]) {
     cudaMemcpy(new_value_cuda, &new_value, sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(max_pair, most_frequent_pair.data(), 2*sizeof(int), cudaMemcpyHostToDevice);
 
-    std::cout << "Most frequent pair: (" << most_frequent_pair[0] << ", " << most_frequent_pair[1] << ") with frequency " << max_frequency << "\n";
+    // std::cout << "Most frequent pair: (" << most_frequent_pair[0] << ", " << most_frequent_pair[1] << ") with frequency " << max_frequency << "\n";
 
     replace_single_most_frequent_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_data, d_offsets, d_lengths, cn, max_pair, new_value_cuda);
     cudaDeviceSynchronize();
