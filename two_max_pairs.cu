@@ -144,11 +144,11 @@ void count_pair_frequencies(int* data,       // Flattened list of all bites
     std::vector<int*> d_data_vec(number_of_gpus), d_offsets_vec(number_of_gpus), d_lengths_vec(number_of_gpus), d_num_chunks_vec(number_of_gpus);
     std::vector<int> h_num_chunks_vec(number_of_gpus);
 
-    int chunk_size = (num_chunks + number_of_gpus - 1) / number_of_gpus; // Divide chunks evenly across GPUs
+    int gpu_chunk_size = (num_chunks + number_of_gpus - 1) / number_of_gpus; // Divide chunks evenly across GPUs
 
     for (int i = 0; i < number_of_gpus; ++i) {
-        int start_chunk = i * chunk_size;
-        int end_chunk = std::min(start_chunk + chunk_size, num_chunks);
+        int start_chunk = i * gpu_chunk_size;
+        int end_chunk = std::min(start_chunk + gpu_chunk_size, num_chunks);
         int num_chunks_for_gpu = end_chunk - start_chunk;
 
         if (num_chunks_for_gpu <= 0) continue;
@@ -299,52 +299,6 @@ __global__ void replace_single_most_frequent_kernel(
 
 }
 
-void old_replace_single_most_frequent(int* data,       // Flattened list of all bites
-                                  const int* offsets,    // Start of each chunk
-                                  const int* lengths,    // Length of each chunk
-                                  const int num_elements, // Number of elements
-                                  const int num_chunks, // Number of chunks
-                                  int* pair, // Pair to replace
-                                  int new_value // New value to replace with
-) {
-    
-    int *d_data, *d_offsets, *d_lengths;
-    int *cn, *max_pair, *new_value_cuda;
-
-    cudaMalloc(&d_data, num_elements * sizeof(int));
-    cudaMalloc(&d_offsets, num_chunks * sizeof(int));
-    cudaMalloc(&d_lengths, num_chunks * sizeof(int));
-    cudaMalloc(&max_pair, 2 * sizeof(int));
-    cudaMalloc(&cn,sizeof(int));
-    cudaMalloc(&new_value_cuda,sizeof(int));
-    
-    cudaMemcpy(d_data, data, num_elements * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_offsets, offsets, num_chunks * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_lengths, lengths, num_chunks * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(cn, &num_chunks, sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(max_pair, pair, 2*sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(new_value_cuda, &new_value, sizeof(int), cudaMemcpyHostToDevice);
-
-    int threadsPerBlock = 128;
-    int blocksPerGrid = (num_chunks + threadsPerBlock - 1) / threadsPerBlock;
-
-    replace_single_most_frequent_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_data, d_offsets, d_lengths, cn, max_pair, new_value_cuda);
-    cudaDeviceSynchronize();
-
-    compact_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_data, d_offsets, d_lengths, cn);
-    cudaDeviceSynchronize();
-
-    cudaMemcpy(data, d_data, num_elements * sizeof(int), cudaMemcpyDeviceToHost);
-
-    cudaFree(d_data);
-    cudaFree(d_offsets);
-    cudaFree(d_lengths);
-    cudaFree(cn);
-    cudaFree(max_pair);
-    cudaFree(new_value_cuda);
-
-}
-
 void replace_single_most_frequent(int* data,       // Flattened list of all bites
                                   const int* offsets,    // Start of each chunk
                                   const int* lengths,    // Length of each chunk
@@ -369,13 +323,13 @@ void replace_single_most_frequent(int* data,       // Flattened list of all bite
     std::vector<int*> d_pair_vec(number_of_gpus), d_new_value_vec(number_of_gpus);
     std::vector<int> h_num_chunks_vec(number_of_gpus);
 
-    int chunk_size = (num_chunks + number_of_gpus - 1) / number_of_gpus; // Divide chunks evenly across GPUs
+    int gpu_chunk_size = (num_chunks + number_of_gpus - 1) / number_of_gpus; // Divide chunks evenly across GPUs
 
     for (int i = 0; i < number_of_gpus; ++i) {
         cudaSetDevice(i);
 
-        int start_chunk = i * chunk_size;
-        int end_chunk = std::min(start_chunk + chunk_size, num_chunks);
+        int start_chunk = i * gpu_chunk_size;
+        int end_chunk = std::min(start_chunk + gpu_chunk_size, num_chunks);
         int num_chunks_for_gpu = end_chunk - start_chunk;
 
         if (num_chunks_for_gpu <= 0) {
@@ -423,16 +377,20 @@ void replace_single_most_frequent(int* data,       // Flattened list of all bite
             fprintf(stderr, "CUDA kernel error on GPU %d: %s\n", i, cudaGetErrorString(err));
         }
 
-        int start_chunk = i * chunk_size;
+        int start_chunk = i * gpu_chunk_size;
         int num_chunks_for_gpu = h_num_chunks_vec[i];
         if (num_chunks_for_gpu <= 0) {
             continue;
         }
 
         int start_offset = offsets[start_chunk];
-        int end_offset = (start_chunk + num_chunks_for_gpu < num_chunks) ? (offsets[start_chunk + num_chunks_for_gpu - 1] + lengths[start_chunk + num_chunks_for_gpu - 1]) : start_offset;
+        int end_chunk = start_chunk + num_chunks_for_gpu;
+        int end_offset = (end_chunk > 0) ? (offsets[end_chunk - 1] + lengths[end_chunk - 1]) : start_offset;
         int num_elements_for_gpu = end_offset - start_offset;
         printf("Copying data from GPU %d, start_offset: %d, num_elements_for_gpu: %d\n", i, start_offset, num_elements_for_gpu);
+        if (num_elements_for_gpu <= 0) {
+            continue;
+        }
         cudaMemcpy(data + start_offset, d_data_vec[i], num_elements_for_gpu * sizeof(int), cudaMemcpyDeviceToHost);
     }
 
