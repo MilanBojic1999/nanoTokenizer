@@ -8,7 +8,7 @@ import base64
 import multiprocessing
 from functools import reduce
 from concurrent.futures import ThreadPoolExecutor
-import two_max_pairs
+# import two_max_pairs
 import numpy as np
 from typing import List, Dict, Tuple
 import atexit
@@ -412,6 +412,73 @@ class RegexTokenizer:
         self.__merges__ = {literal_eval(d[0]):int(d[1]) for d in loaded_data}
         # print(self.__merges__)
 
+    def _bytes_to_unicode(self):
+        """
+        Returns list of utf-8 byte and a corresponding list of unicode strings.
+        This is the standard mapping used by GPT-2/Transformers for byte-level BPE.
+        """
+        bs = list(range(ord("!"), ord("~") + 1)) + list(range(ord("¡"), ord("¬") + 1)) + list(range(ord("®"), ord("ÿ") + 1))
+        cs = bs[:]
+        n = 0
+        for b in range(2**8):
+            if b not in bs:
+                bs.append(b)
+                cs.append(2**8 + n)
+                n += 1
+        cs = [chr(n) for n in cs]
+        return dict(zip(bs, cs))
+
+    def save_pretrained(self, save_directory):
+        """Saves the tokenizer in a format compatible with Transformers GPT-2 (vocab.json and merges.txt)."""
+        if not os.path.exists(save_directory):
+            os.makedirs(save_directory)
+        
+        byte_encoder = self._bytes_to_unicode()
+        def render_token(bites):
+            return "".join(byte_encoder[b] for b in bites)
+
+        # vocab.json: {token_string: id}
+        vocab = {render_token(b): i for i, b in self.__vocab__.items()}
+        with open(os.path.join(save_directory, "vocab.json"), "w", encoding="utf-8") as f:
+            json.dump(vocab, f, ensure_ascii=False, indent=4)
+
+        # merges.txt: BPE merge rules in string format
+        with open(os.path.join(save_directory, "merges.txt"), "w", encoding="utf-8") as f:
+            f.write("#version: 0.2\n")
+            for (p0, p1) in self.__merges__:
+                s0 = render_token(self.__vocab__[p0])
+                s1 = render_token(self.__vocab__[p1])
+                f.write(f"{s0} {s1}\n")
+
+    def load_pretrained(self, load_directory):
+        """Loads the tokenizer from Transformers GPT-2 format (vocab.json and merges.txt)."""
+        byte_encoder = self._bytes_to_unicode()
+        byte_decoder = {v: k for k, v in byte_encoder.items()}
+        def parse_token(s):
+            return bytes([byte_decoder[c] for c in s])
+
+        with open(os.path.join(load_directory, "vocab.json"), "r", encoding="utf-8") as f:
+            vocab_json = json.load(f)
+        
+        # Reconstruct self.__vocab__: {id: bytes}
+        self.__vocab__ = {int(v): parse_token(k) for k, v in vocab_json.items()}
+        token_to_id = {k: int(v) for k, v in vocab_json.items()}
+
+        with open(os.path.join(load_directory, "merges.txt"), "r", encoding="utf-8") as f:
+            merges_lines = f.read().splitlines()
+        if merges_lines and merges_lines[0].startswith("#version"):
+            merges_lines = merges_lines[1:]
+        
+        self.__merges__ = {}
+        for line in merges_lines:
+            line = line.strip()
+            if not line: continue
+            p0_s, p1_s = line.split()
+            p0, p1 = token_to_id[p0_s], token_to_id[p1_s]
+            # Combined string must exist in vocab for valid BPE merges
+            if p0_s + p1_s in token_to_id:
+                self.__merges__[(p0, p1)] = token_to_id[p0_s + p1_s]
+
 def test_tokenizer(tokenizer,text):
     if text == tokenizer.decode(tokenzer.encode(text)):
         print("GOOD test: ",text)
@@ -438,8 +505,8 @@ if __name__ == "__main__":
     # text = text[:2**15]
     text = text[:64]
     
-    tokenzer = RegexTokenizer(training_data=text)
-    # tokenzer = RegexTokenizer(True, dict_path="./token_small_rs")
+    # tokenzer = RegexTokenizer(training_data=text)
+    tokenzer = RegexTokenizer(True, dict_path="./token_small_rs")
 
     # for idx, byt in tokenzer.__vocab__.items():
     #     print(f"{idx} -->  ||{byt.decode("utf-8",errors="replace")}||")
@@ -451,7 +518,8 @@ if __name__ == "__main__":
     # print_tokenizer(tokenzer, "Moje ime je Petrić Petrović")
     print_tokenizer(tokenzer, "Sve srećne porodice liče jedna na drugu, svaka nesrećna porodica nesrećna je na svoj način")
     print_tokenizer(tokenzer, "Majka mi je danas umrla. A možda i juče, ne znam. Primio sam telegram iz doma staraca: Majka umrla. Sahrana sutra. S osobitim poštovanjem Menutim, to ništa ne znači. Možda je to bilo i juče.")
-    tokenzer.save("./token_small_rs_cuda")
+    # tokenzer.save("./token_small_rs_cuda")
+    tokenzer.save_pretrained("./token_small_rs_transformers")
     # tokenzer.save("./token_big_en")
     # tokenzer.save("./token_small_en")
     # tokenzer.save("./token_small_en_cuda")
