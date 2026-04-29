@@ -186,6 +186,20 @@ class RegexTokenizer:
         return output_list
         # return [sublist for outer in output_list for sublist in outer]
 
+    @staticmethod
+    def _build_csr(list_of_token_lists):
+        """Convert List[List[int]] → (flat_data, offsets, lengths) as numpy arrays."""
+        n = len(list_of_token_lists)
+        lengths = np.array([len(row) for row in list_of_token_lists], dtype=np.int32)
+        offsets = np.zeros(n + 1, dtype=np.int32)
+        np.cumsum(lengths, out=offsets[1:])
+
+        flat_data = np.empty(offsets[-1], dtype=np.int32)
+        for i, row in enumerate(list_of_token_lists):
+            flat_data[offsets[i]:offsets[i+1]] = row
+
+        return flat_data, offsets, lengths
+
     def __replace_most_frequent__(self, list_of_bites:list, new_value):
         stats = self.__most_frequent_pair__(list_of_bites)
         max_pair = max(stats, key=stats.get)
@@ -313,16 +327,13 @@ class RegexTokenizer:
         assert vocab_size >= 256
 
         text_chunks = re.findall(self.tiktoken_pat, text)
-        # print(text_chunks)
         ids = [list(ch.encode("utf-8")) for ch in text_chunks]
         
-        max_length = max([len(row) for row in ids])
-        ids_padded = [row + [-1]*(max_length-len(row)) for row in ids]
-        ids = np.array(ids_padded, dtype=np.int32)
+        flat_ids, offsets, lengths = self._build_csr(ids)
 
         number_of_merges = vocab_size-256
-        two_max_pairs.allocate_global_arrays()
-        atexit.register(two_max_pairs.free_global_arrays)
+        two_max_pairs.allocate_cuda_elemets(flat_ids, offsets, lengths, len(flat_ids), len(ids))
+        atexit.register(two_max_pairs.free_cuda_elemets)
         
         for i in tqdm(range(number_of_merges)):
             # print("Input length: ",len(ids))

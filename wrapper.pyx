@@ -1,9 +1,8 @@
 from libc.stdlib cimport malloc, free
 cdef extern from "two_max_pairs.cuh":
 
-    void allocate_pairs_counter()
-    void* get_pairs_counter()
-    void free_pairs_counter()
+    void allocate_cuda_elemets(int* data, const int* offsets, const int* lengths, const int num_elements, const int num_chunks)
+    void free_cuda_elemets()
 
     void count_pair_frequencies(int* data, const int* offsets, const int* lengths, const int num_elements, const int num_chunks, int* max_pair, int* frequency )
 
@@ -16,20 +15,42 @@ cdef extern from "two_max_pairs.cuh":
 import numpy as np
 cimport numpy as np
 
-def allocate_global_arrays():
+def allocate_cuda_elemets(np.ndarray[np.int32_t, ndim=1] data, np.ndarray[np.int32_t, ndim=1] offsets, np.ndarray[np.int32_t, ndim=1] lengths):
     """
     Allocate global arrays for pair counting.
     This function should be called before using any CUDA functions that require these arrays.
     """
-    allocate_pairs_counter()
+    allocate_cuda_elemets(
+        <int*>data.data, 
+        <int*>offsets.data, 
+        <int*>lengths.data, 
+        data.shape[0], 
+        offsets.shape[0]
+    )
 
 
-def free_global_arrays():
+def free_cuda_elemets():
     """Free the global arrays allocated for pair counting.
     This function should be called when the arrays are no longer needed to avoid memory leaks.
     """
-    free_pairs_counter()
+    free_cuda_elemets()
 
+def get_current_data():
+    """Get the current data from the CUDA global arrays.
+    This function can be used for debugging or to inspect the current state of the data on the GPU.
+    Returns:
+        A tuple containing a numpy array: data.
+    """
+    cdef int* data_ptr
+
+    get_data(&data_ptr)
+
+    # Assuming we know the sizes of these arrays, we can create numpy arrays from the pointers.
+    num_elements = 1000  # This should be set to the actual number of elements
+
+    data_array = np.ctypeslib.as_array(data_ptr, shape=(num_elements,))
+
+    return data_array
 
 def cuda_count_pair_frequencies(np.ndarray[np.int32_t, ndim=2] data):
 
@@ -82,8 +103,3 @@ def cuda_replace_single_most_frequent(np.ndarray[np.int32_t, ndim=2] data, np.nd
     # The CUDA function now compacts and pads with -1, so the slow Python-based move is no longer needed.
     new_data = flat_data.reshape(shape_tuple)
     return new_data
-
-    
-
-
-    

@@ -15,13 +15,37 @@
 
 typedef int pair_int;
 
-static pair_int* global_pairs_counter = nullptr;
-static std::vector<pair_int*> pairs_counters;
-static int number_of_gpus = 0;
+typedef struct
+{
+    int* d_data;
+    int* d_offsets;
+    int* d_lengths;
+    pair_int* d_pairs_counter;
 
-extern "C" void allocate_pairs_counter() {
-    if (!pairs_counters.empty() || global_pairs_counter != nullptr) {
-        return;
+    int start_chunk;
+    int end_chunk;
+    int element_start;
+    int num_elements;
+
+} GPUState;
+
+
+
+static int number_of_gpus = 0;
+static int num_elements = 0;
+static int num_chunks = 0;
+static GPUState* gpu_states;
+
+extern "C" void allocate_cuda_elemets(int* data,       // Flattened list of all bites
+                             const int* offsets,    // Start of each chunk
+                             const int* lengths,    // Length of each chunk
+                             const int host_num_elements, // Number of elements
+                             const int host_num_chunks, // Number of chunks
+) {
+
+    if (gpu_states != nullptr) {
+        fprintf(stderr, "GPU states already allocated. Freeing existing GPU states before reallocation.\n");
+        free_cuda_elemets();
     }
 
     int num_gpus;
@@ -32,60 +56,118 @@ extern "C" void allocate_pairs_counter() {
         return;
     }
     number_of_gpus = num_gpus;
+    num_elements = host_num_elements;
+    num_chunks = host_num_chunks;
     printf("Found %d CUDA devices.\n", num_gpus);
     
-    pairs_counters.resize(num_gpus);
 
-    err = cudaMalloc(&global_pairs_counter, MAX_PAIR_KEY * sizeof(pair_int));
-    if (err != cudaSuccess) {
-        cudaSetDevice(0);
-        fprintf(stderr, "Failed to allocate global pairs_counter: %s\n", cudaGetErrorString(err));
-        global_pairs_counter = nullptr;
-        return;
-    }
-    for (int i = 0; i < num_gpus; ++i) {
-        cudaSetDevice(i);
-        err = cudaMalloc(&pairs_counters[i], MAX_PAIR_KEY * sizeof(pair_int));
-        if (err != cudaSuccess) {
-            fprintf(stderr, "Failed to allocate memory for pairs_counter on GPU %d: %s\n", i, cudaGetErrorString(err));
-            pairs_counters[i] = nullptr;
-            cudaFree(global_pairs_counter);
-            global_pairs_counter = nullptr;
+    gpu_states = (GPUState*)malloc(num_gpus * sizeof(GPUState));
+    int tokens_per_gpu = (num_elements + num_gpus - 1) / num_gpus;
+    int token_accumulated = 0;
+    int current_gpu = 0;
 
-            for (int j = 0; j < i; ++j) {
-                if (pairs_counters[j] != nullptr) {
-                    cudaSetDevice(j);
-                    cudaFree(pairs_counters[j]);
-                    pairs_counters[j] = nullptr;
-                }
-            }
-        } else {
-            printf("Allocated pairs_counter on GPU %d\n", i);
+    gpu_states[0].start_chunk = 0
+    gpu_states[0].element_start = 0
+
+    // Assign chunks to GPUs based on the number of tokens, ensuring that each GPU gets a roughly equal number of tokens to process
+    for (int i; i < num_chunks && current_gpu < number_of_gpus - 1; ++i) {
+        token_accumulated += lengths[i];
+        if (token_accumulated >= (current_gpu + 1) * tokens_per_gpu) {
+            gpu_states[current_gpu].end_chunk = i + 1;
+            ++current_gpu;
+            gpu_states[current_gpu].start_chunk = i + 1;
+            gpu_states[current_gpu].element_start = offsets[i + 1];
         }
+    }
+
+    gpu_states[number_of_gpus - 1].end_chunk = num_chunks;
+
+
+    for (int i = 0; i < num_gpus; ++i) {
+        int gpu_start_chunk  = gpu_states[i].start_chunk;
+        int gpu_end_chunk    = gpu_states[i].end_chunk;
+        int gpu_num_chunks   = gpu_end_chunk - gpu_start_chunk;
+        int gpu_elem_start   = gpu_states[i].element_start;
+        int gpu_num_elements = offsets[gpu_end_chunk] - offsets[gpu_start_chunk];
+
+        gpu_states[i].num_elements = gpu_num_elements;
+
+        if (gpu_num_chunks <= 0 || gpu_num_elements <= 0) {
+            gpu_states[i].d_data = nullptr;
+            gpu_states[i].d_offsets = nullptr;
+            gpu_states[i].d_lengths = nullptr;
+            gpu_states[i].d_pairs_counter = nullptr;
+            continue;
+        }
+
+        cudaSetDevice(i);
+        cudaMalloc(&gpu_states[i].d_data, gpu_num_elements * sizeof(int));
+        cudaMalloc(&gpu_states[i].d_offsets, gpu_num_chunks * sizeof(int));
+        cudaMalloc(&gpu_states[i].d_lengths, gpu_num_chunks * sizeof(int));
+        cudaMalloc(&gpu_states[i].d_pairs_counter, MAX_PAIR_KEY * sizeof(pair_int));
+
+        cudaMemcpy(gpu_states[i].d_data, data + gpu_elem_start, gpu_num_elements * sizeof(int), cudaMemcpyHostToDevice);
+
+        // Moving offsets to be relative to the GPU's assigned chunks
+        int* relative_offsets = (int*)malloc(gpu_num_chunks * sizeof(int));
+        for (int j = 0; j < gpu_num_chunks; ++j) {
+            relative_offsets[j] = offsets[gpu_start_chunk + j] - gpu_elem_start;
+        }
+        cudaMemcpy(gpu_states[i].d_offsets, relative_offsets, gpu_num_chunks * sizeof(int), cudaMemcpyHostToDevice);
+        free(relative_offsets);
+
+        // copy lengths directly since they are already per chunk
+        cudaMemcpy(gpu_states[i].d_lengths, lengths + gpu_start_chunk, gpu_num_chunks * sizeof(int), cudaMemcpyHostToDevice);
     }
     cudaSetDevice(0); // Reset to the first GPU after allocation
 }
 
-extern "C" void* get_pairs_counter() {
+extern "C" void get_data(int* data, int* lenghts_out) {
+    
+    for (int i = 0; i < number_of_gpus; ++i) {
+        if (gpu_states[i].d_data == nullptr) continue;
+
+        int gpu_num_elements = gpu_states[i].num_elements;
+        int gpu_num_chunks = gpu_states[i].end_chunk - gpu_states[i].start_chunk;
+        cudaSetDevice(i);
+        cudaMemcpy(lenghts_out + gpu_states[i].start_chunk, gpu_states[i].d_lengths, gpu_num_chunks * sizeof(int), cudaMemcpyDeviceToHost);
+
+        int element_counts = gpu_states[i].num_elements;
+        cudaMemcpy(data + gpu_states[i].element_start, gpu_states[i].d_data, element_counts * sizeof(int), cudaMemcpyDeviceToHost);
+    }
+}
+
+extern "C" void get_offsets(int* offsets){
     return nullptr;
 }
 
-extern "C" void free_pairs_counter() {
-    if (!pairs_counters.empty()) {
-        for (int i = 0; i < pairs_counters.size(); ++i) {
-            if (pairs_counters[i] != nullptr) {
-                cudaSetDevice(i);
-                cudaFree(pairs_counters[i]);
-                pairs_counters[i] = nullptr;
-                printf("Freed pairs_counter on GPU %d\n", i);
+extern "C" void get_lengths(int* lengths) {
+    return nullptr;
+}
+
+extern "C" void free_cuda_elemets() {
+    \\ check if gpu_states is allocated and free the pairs_counters for each GPU
+    if (gpu_states != nullptr) {
+        for (int i = 0; i < number_of_gpus; ++i) {
+            cudaSetDevice(i);
+            if (gpu_states[i].d_pairs_counter != nullptr) {
+                cudaFree(gpu_states[i].d_pairs_counter);
+                gpu_states[i].d_pairs_counter = nullptr;
+                cudaFree(gpu_states[i].d_data);
+                gpu_states[i].d_data = nullptr;
+                cudaFree(gpu_states[i].d_offsets);
+                gpu_states[i].d_offsets = nullptr;
+                cudaFree(gpu_states[i].d_lengths);
+                gpu_states[i].d_lengths = nullptr;
             }
         }
-        pairs_counters.clear();
-        number_of_gpus = 0;
-        printf("Freed pairs_counter\n");
+        free(gpu_states);
+        gpu_states = nullptr;
     }
     cudaSetDevice(0); // Reset to the first GPU after allocation
 }
+
+
 
 
 __global__ void count_pair_frequencies_kernel(
@@ -93,21 +175,19 @@ __global__ void count_pair_frequencies_kernel(
     const int* offsets,    // Start of each chunk
     const int* lengths,    // Length of each chunk
     const int* num_chunks, // Number of chunks
-    pair_int* global_pair_counts // Size: MAX_PAIR_KEY
+    pair_int* pair_counts // Size: MAX_PAIR_KEY
 ) {
     int chunk_id = blockIdx.x * blockDim.x + threadIdx.x;
     // printf("Thread %d processing chunk %d (GridDim (%d %d), BlockDim (%d %d))\n", threadIdx.x, chunk_id, gridDim.x, gridDim.y, blockDim.x, blockDim.y);
 
     if (chunk_id >= *num_chunks) {
-        atomicAdd(&global_pair_counts[chunk_id], -1.0*chunk_id);
+        atomicAdd(&pair_counts[chunk_id], -1.0*chunk_id);
         return;
     }
 
     int offset = offsets[chunk_id];
     int length = lengths[chunk_id];
-    // printf("Chunk %d is being processed (%d, %d)\n", chunk_id, offset, length);
 
-    // atomicAdd(&global_pair_counts[chunk_id], chunk_id*10000+offsets[chunk_id]*100+lengths[chunk_id]);
 
     for (int i = 0; i < length - 1; ++i) {
         int a = data[offset + i];
@@ -117,17 +197,12 @@ __global__ void count_pair_frequencies_kernel(
         }
         int key = (a << BIT_OFFSET) | b;  // Flatten (a,b) into single int key
 
-        atomicAdd(&global_pair_counts[key], 1);
+        atomicAdd(&pair_counts[key], 1);
     }
 }
 
-void count_pair_frequencies(int* data,       // Flattened list of all bites
-                             const int* offsets,    // Start of each chunk
-                             const int* lengths,    // Length of each chunk
-                             const int num_elements, // Number of elements
-                             const int num_chunks, // Number of chunks
-                             int* max_pair, // Max pair to replace with new value
-                             int* frequency // Frequency of the most frequent pair
+void count_pair_frequencies(int* max_pair, // Max pair to replace with new value
+                            int* frequency // Frequency of the max pair
 ) {
 
     if (number_of_gpus == 0) {
@@ -139,49 +214,16 @@ void count_pair_frequencies(int* data,       // Flattened list of all bites
     for (int i = 0; i < number_of_gpus; ++i) {
         cudaSetDevice(i);
         cudaStreamCreate(&streams[i]);
+        cudaMemsetAsync(gpu_states[i].d_pairs_counter, 0, MAX_PAIR_KEY * sizeof(pair_int), streams[i]);
     }
 
-    std::vector<int*> d_data_vec(number_of_gpus), d_offsets_vec(number_of_gpus), d_lengths_vec(number_of_gpus), d_num_chunks_vec(number_of_gpus);
-    std::vector<int> h_num_chunks_vec(number_of_gpus);
-
-    int gpu_chunk_size = (num_chunks + number_of_gpus - 1) / number_of_gpus; // Divide chunks evenly across GPUs
-
     for (int i = 0; i < number_of_gpus; ++i) {
-        int start_chunk = i * gpu_chunk_size;
-        int end_chunk = std::min(start_chunk + gpu_chunk_size, num_chunks);
-        int num_chunks_for_gpu = end_chunk - start_chunk;
-
-        if (num_chunks_for_gpu <= 0) continue;
-
-        h_num_chunks_vec[i] = num_chunks_for_gpu;
-
-        int start_offset = offsets[start_chunk];
-        int end_offset = (end_chunk > 0) ? (offsets[end_chunk - 1] + lengths[end_chunk - 1]) : start_offset;
-        int num_elements_for_gpu = end_offset - start_offset;
-
-        if (num_chunks_for_gpu == 0 || num_elements_for_gpu == 0) {
-            h_num_chunks_vec[i] = 0;
-            continue;
-        }
-
-        cudaSetDevice(i);
-        cudaMalloc(&d_data_vec[i], num_elements_for_gpu * sizeof(int));
-        cudaMalloc(&d_offsets_vec[i], num_chunks_for_gpu * sizeof(int));
-        cudaMalloc(&d_lengths_vec[i], num_chunks_for_gpu * sizeof(int));
-        cudaMalloc(&d_num_chunks_vec[i], sizeof(int));
-
-        cudaMemcpyAsync(d_data_vec[i], data + start_offset, num_elements_for_gpu * sizeof(int), cudaMemcpyHostToDevice, streams[i]);
-        cudaMemcpyAsync(d_offsets_vec[i], offsets + start_chunk, num_chunks_for_gpu * sizeof(int), cudaMemcpyHostToDevice, streams[i]);
-        cudaMemcpyAsync(d_lengths_vec[i], lengths + start_chunk, num_chunks_for_gpu * sizeof(int), cudaMemcpyHostToDevice, streams[i]);
-        cudaMemcpyAsync(d_num_chunks_vec[i], &h_num_chunks_vec[i], sizeof(int), cudaMemcpyHostToDevice, streams[i]);
-
-        cudaMemsetAsync(pairs_counters[i], 0, MAX_PAIR_KEY * sizeof(pair_int), streams[i]);
-
+        int gpu_num_elements = gpu_states[i].num_elements
         int threadsPerBlock = 256;
         int blocksPerGrid = (num_chunks_for_gpu + threadsPerBlock - 1) / threadsPerBlock;
         // std::cout << "Launching kernel with\n" ;
 
-        count_pair_frequencies_kernel<<<blocksPerGrid, threadsPerBlock, 0, streams[i]>>>(d_data_vec[i], d_offsets_vec[i], d_lengths_vec[i], d_num_chunks_vec[i], pairs_counters[i]);
+        count_pair_frequencies_kernel<<<blocksPerGrid, threadsPerBlock, 0, streams[i]>>>(gpu_states[i].d_data, gpu_states[i].d_offset, gpu_states[i].d_lengths, gpu_num_elements, gpu_states[i].d_pairs_counter);
     }
 
     for (int i = 0; i < number_of_gpus; ++i) {
@@ -193,51 +235,42 @@ void count_pair_frequencies(int* data,       // Flattened list of all bites
         }
     }
 
-    std::vector<pair_int> h_global_counter(MAX_PAIR_KEY, 0);
-    std::vector<pair_int> h_temp_counter(MAX_PAIR_KEY);
+    // Updtating a way ot find the global max pair, from absolute max pair for all GPUs to finding the max pair for each GPU and then comparing those max pairs to find the global max pair. This is more efficient than copying the entire pairs_counter array back to the host for each GPU.
 
+    int global_max_frequency = -1;
 
     for (int i=0; i < number_of_gpus; ++i) {
         if (h_num_chunks_vec[i] <= 0) continue;
 
         cudaSetDevice(i);
-        cudaMemcpy(h_temp_counter.data(), pairs_counters[i], MAX_PAIR_KEY * sizeof(pair_int), cudaMemcpyDeviceToHost);
+        thrust::device_ptr<pair_int> d_counter_ptr(gpu_states[i].d_pairs_counter);
+        auto max_iter = thrust::max_element(thrust::device, d_counter_ptr, d_counter_ptr + MAX_PAIR_KEY);
 
-        for (int j = 0; j < MAX_PAIR_KEY; ++j) {
-            h_global_counter[j] += h_temp_counter[j];
+        pair_int local_max_idx = max_iter - d_counter_ptr;
+        pair_int local_max_val;
+        cudaMemcpy(&local_max_val, thrust::raw_pointer_cast(max_iter),
+                   sizeof(pair_int), cudaMemcpyDeviceToHost);
+
+        if (local_max_val > global_max_frequency) {
+        
+            global_max_frequency = local_max_val;
+            max_pair[0] = local_max_idx >> BIT_OFFSET;  // Extract first token
+            max_pair[1] = local_max_idx & BIT_MASK;     // Extract second token
+            *frequency = local_max_val;
         }
-    }
-
-    // Find the maximum element in the global counter
-    auto max_it = std::max_element(h_global_counter.begin(), h_global_counter.end());
-    if (max_it != h_global_counter.end()) {
-        int max_index = std::distance(h_global_counter.begin(), max_it);
-        int max_value = *max_it;
-        max_pair[0] = max_index >> BIT_OFFSET;  // Extract first token
-        max_pair[1] = max_index & BIT_MASK;     // Extract second token
-        *frequency = max_value;
-    } else {
-        max_pair[0] = 0;
-        max_pair[1] = 0;
-        *frequency = -1;
     }
 
     for (int i = 0; i < number_of_gpus; ++i) {
         cudaSetDevice(i);
-        if (h_num_chunks_vec[i] > 0) {
-            cudaFree(d_data_vec[i]);
-            cudaFree(d_offsets_vec[i]);
-            cudaFree(d_lengths_vec[i]);
-            cudaFree(d_num_chunks_vec[i]);
-        }
         cudaStreamDestroy(streams[i]);
     }
 
+    cudaSetDevice(0);
 }
 
-__global__ void compact_kernel(int* data, const int* offsets, int* lengths, const int* num_chunks) {
+__global__ void compact_kernel(int* data, const int* offsets, int* lengths, const int num_chunks) {
     int chunk_id = blockIdx.x * blockDim.x + threadIdx.x;
-    if (chunk_id >= *num_chunks) {
+    if (chunk_id >= num_chunks) {
         return;
     }
 
@@ -267,7 +300,7 @@ __global__ void replace_single_most_frequent_kernel(
     int* data,       // Flattened list of all bites
     const int* offsets,    // Start of each chunk
     const int* lengths,    // Length of each chunk
-    const int* num_chunks, // Number of chunks
+    const int num_chunks, // Number of chunks
     int* pair, // Pair to replace
     int* new_value // New value to replace with
 ) {
@@ -275,7 +308,7 @@ __global__ void replace_single_most_frequent_kernel(
 
     // printf("Thread %d processing chunk %d (GridDim (%d %d), BlockDim (%d %d)) %d\n", threadIdx.x, chunk_id, gridDim.x, gridDim.y, blockDim.x, blockDim.y, *num_chunks);
 
-    if (chunk_id >= *num_chunks) {
+    if (chunk_id >= num_chunks) {
         return;
     }
 
@@ -299,12 +332,7 @@ __global__ void replace_single_most_frequent_kernel(
 
 }
 
-void replace_single_most_frequent(int* data,       // Flattened list of all bites
-                                  const int* offsets,    // Start of each chunk
-                                  const int* lengths,    // Length of each chunk
-                                  const int num_elements, // Number of elements
-                                  const int num_chunks, // Number of chunks
-                                  int* pair, // Pair to replace
+void replace_single_most_frequent(int* pair, // Pair to replace
                                   int new_value // New value to replace with
 ) {
     
@@ -319,98 +347,38 @@ void replace_single_most_frequent(int* data,       // Flattened list of all bite
         cudaStreamCreate(&streams[i]);
     }
 
-    std::vector<int*> d_data_vec(number_of_gpus), d_offsets_vec(number_of_gpus), d_lengths_vec(number_of_gpus), d_num_chunks_vec(number_of_gpus);
-    std::vector<int*> d_pair_vec(number_of_gpus), d_new_value_vec(number_of_gpus);
-    std::vector<int> h_num_chunks_vec(number_of_gpus);
-
-    int gpu_chunk_size = (num_chunks + number_of_gpus - 1) / number_of_gpus; // Divide chunks evenly across GPUs
-
     for (int i = 0; i < number_of_gpus; ++i) {
         cudaSetDevice(i);
 
-        int start_chunk = i * gpu_chunk_size;
-        int end_chunk = std::min(start_chunk + gpu_chunk_size, num_chunks);
-        int num_chunks_for_gpu = end_chunk - start_chunk;
+        num_chunks_for_gpu = gpu_states[i].end_chunk - gpu_states[i].start_chunk;
 
-        if (num_chunks_for_gpu <= 0) {
-            h_num_chunks_vec[i] = 0;
-            continue;
-        }
+        if (num_chunks_for_gpu == 0) continue;
 
-        h_num_chunks_vec[i] = num_chunks_for_gpu;
+        int* d_pair, *d_new_value; *num_chunks_gpu
 
-        int start_offset = offsets[start_chunk];
-        int end_offset = (end_chunk > 0) ? (offsets[end_chunk - 1] + lengths[end_chunk - 1]) : start_offset;
-        int num_elements_for_gpu = end_offset - start_offset;
+        cudaMalloc(&d_pair, 2 * sizeof(int));
+        cudaMalloc(&d_new_value, sizeof(int));
+        cudaMalloc(&num_chunks_gpu, sizeof(int));
 
-        if (num_chunks_for_gpu <= 0 || num_elements_for_gpu <= 0) {
-            h_num_chunks_vec[i] = 0;
-            continue;
-        }
+        cudaMemcpy(d_pair, pair, 2 * sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_new_value, &new_value, sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemcpy(num_chunks_gpu, &num_chunks_for_gpu, sizeof(int), cudaMemcpyHostToDevice);
 
-        cudaMalloc(&d_data_vec[i], num_elements_for_gpu * sizeof(int));
-        cudaMalloc(&d_offsets_vec[i], num_chunks_for_gpu * sizeof(int));
-        cudaMalloc(&d_lengths_vec[i], num_chunks_for_gpu * sizeof(int));
-        cudaMalloc(&d_num_chunks_vec[i], sizeof(int));
-        cudaMalloc(&d_pair_vec[i], 2 * sizeof(int));
-        cudaMalloc(&d_new_value_vec[i], sizeof(int));
 
-        cudaMemcpyAsync(d_data_vec[i], data + start_offset, num_elements_for_gpu * sizeof(int), cudaMemcpyHostToDevice, streams[i]);
-        cudaMemcpyAsync(d_offsets_vec[i], offsets + start_chunk, num_chunks_for_gpu * sizeof(int), cudaMemcpyHostToDevice, streams[i]);
-        cudaMemcpyAsync(d_lengths_vec[i], lengths + start_chunk, num_chunks_for_gpu * sizeof(int), cudaMemcpyHostToDevice, streams[i]);
-        cudaMemcpyAsync(d_num_chunks_vec[i], &h_num_chunks_vec[i], sizeof(int), cudaMemcpyHostToDevice, streams[i]);
-        cudaMemcpyAsync(d_pair_vec[i], pair, 2 * sizeof(int), cudaMemcpyHostToDevice, streams[i]);
-        cudaMemcpyAsync(d_new_value_vec[i], &new_value, sizeof(int), cudaMemcpyHostToDevice, streams[i]);
-
-        int threadsPerBlock = 128;
+        int threadsPerBlock = 256;
         int blocksPerGrid = (num_chunks_for_gpu + threadsPerBlock - 1) / threadsPerBlock;
 
-        replace_single_most_frequent_kernel<<<blocksPerGrid, threadsPerBlock, 0, streams[i]>>>(d_data_vec[i], d_offsets_vec[i], d_lengths_vec[i], d_num_chunks_vec[i], d_pair_vec[i], d_new_value_vec[i]);
-        compact_kernel<<<blocksPerGrid, threadsPerBlock, 0, streams[i]>>>(d_data_vec[i], d_offsets_vec[i], d_lengths_vec[i], d_num_chunks_vec[i]);
+        replace_single_most_frequent_kernel<<<blocksPerGrid, threadsPerBlock, 0, streams[i]>>>(gpu_states[i].d_data, gpu_states[i].d_offset, gpu_states[i].d_lengths, num_chunks_gpu, d_pair, d_new_value);
+        compact_kernel<<<blocksPerGrid, threadsPerBlock, 0, streams[i]>>>(gpu_states[i].d_data, gpu_states[i].d_offset, gpu_states[i].d_lengths, num_chunks_gpu);
     }
 
     for (int i = 0; i < number_of_gpus; ++i) {
         cudaSetDevice(i);
         cudaStreamSynchronize(streams[i]);
-        cudaError_t err = cudaGetLastError();
-        if (err != cudaSuccess) {
-            fprintf(stderr, "CUDA kernel error on GPU %d: %s\n", i, cudaGetErrorString(err));
-        }
-
-        int start_chunk = i * gpu_chunk_size;
-        int num_chunks_for_gpu = h_num_chunks_vec[i];
-        if (num_chunks_for_gpu <= 0) {
-            continue;
-        }
-
-        int start_offset = offsets[start_chunk];
-        int end_chunk = start_chunk + num_chunks_for_gpu;
-        int end_offset = (end_chunk > 0) ? (offsets[end_chunk - 1] + lengths[end_chunk - 1]) : start_offset;
-        int num_elements_for_gpu = end_offset - start_offset;
-        printf("Copying data from GPU %d, start_offset: %d, num_elements_for_gpu: %d\n", i, start_offset, num_elements_for_gpu);
-        if (num_elements_for_gpu <= 0) {
-            continue;
-        }
-        cudaMemcpy(data + start_offset, d_data_vec[i], num_elements_for_gpu * sizeof(int), cudaMemcpyDeviceToHost);
-    }
-
-    for (int i = 0; i < number_of_gpus; ++i) {
-        cudaSetDevice(i);
-        cudaStreamSynchronize(streams[i]);
-    }
-
-    for (int i = 0; i < number_of_gpus; ++i) {
-        cudaSetDevice(i);
-        if (h_num_chunks_vec[i] > 0) {
-            cudaFree(d_data_vec[i]);
-            cudaFree(d_offsets_vec[i]);
-            cudaFree(d_lengths_vec[i]);
-            cudaFree(d_num_chunks_vec[i]);
-            cudaFree(d_pair_vec[i]);
-            cudaFree(d_new_value_vec[i]);
-        }
         cudaStreamDestroy(streams[i]);
     }
+
+    cudaSetDevice(0);
 
 }
 
