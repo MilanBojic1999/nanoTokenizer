@@ -192,9 +192,9 @@ __global__ void count_pair_frequencies_kernel(
     for (int i = 0; i < length - 1; ++i) {
         int a = data[offset + i];
         int b = data[offset + i + 1];
-        if (a < 0 || b < 0) {
-            break; // Skip negative values
-        }
+        // if (a < 0 || b < 0) {
+        //     break; // Skip negative values
+        // }
         int key = (a << BIT_OFFSET) | b;  // Flatten (a,b) into single int key
 
         atomicAdd(&pair_counts[key], 1);

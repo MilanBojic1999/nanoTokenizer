@@ -159,9 +159,9 @@ class RegexTokenizer:
 
         return total_counts
     
-    def __most_frequent_pair_cuda__(self, list_of_bites):
-        max_pair = two_max_pairs.cuda_count_pair_frequencies(list_of_bites)
-        return max_pair
+    def __most_frequent_pair_cuda__(self, pair, frequency):
+        two_max_pairs.cuda_count_pair_frequencies(pair, frequency)
+        return pair, frequency
 
     @staticmethod
     def _replace_single_most_frequent(inputs: Tuple[List[int],Tuple[int,int],int]) -> List[int]:
@@ -213,15 +213,13 @@ class RegexTokenizer:
         # print("Olist: ", output_list)
         return (output_list, max_pair, stats[max_pair])
 
-    def __replace_most_frequent_cuda__(self, list_of_bites, new_value):
+    def __replace_most_frequent_cuda__(self, pair, frequency):
 
-        max_pair, freq = self.__most_frequent_pair_cuda__(list_of_bites)
+        pair, frequency = self.__most_frequent_pair_cuda__(pair, frequency)
 
-        new_data = two_max_pairs.cuda_replace_single_most_frequent(list_of_bites, max_pair, new_value)
+        two_max_pairs.cuda_replace_single_most_frequent(pair, frequency)
 
-        print(new_data)
-
-        return new_data, tuple(list(max_pair.tolist())), freq
+        return tuple(list(pair.tolist())), int(frequency)
 
 
     def _apply_merges_to_word(inputs: Tuple[List[int], Dict[Tuple[int, int], int]]) -> List[int]:
@@ -328,6 +326,7 @@ class RegexTokenizer:
 
         text_chunks = re.findall(self.tiktoken_pat, text)
         ids = [list(ch.encode("utf-8")) for ch in text_chunks]
+        original_bytes = len(ids)
         
         flat_ids, offsets, lengths = self._build_csr(ids)
 
@@ -335,6 +334,9 @@ class RegexTokenizer:
         two_max_pairs.allocate_cuda_elemets(flat_ids, offsets, lengths, len(flat_ids), len(ids))
         atexit.register(two_max_pairs.free_cuda_elemets)
         
+        pair_out = np.zeros(2, dtype=np.int32)
+        freq_out = np.zeros(1, dtype=np.int32)
+
         for i in tqdm(range(number_of_merges)):
             # print("Input length: ",len(ids))
             idx = 256 + i
@@ -352,6 +354,16 @@ class RegexTokenizer:
         if verbose:
             new_length = len(np.where(ids!=-1))
             print(f"Final length: {len(np.where(ids!=-1))} ({new_length/len(text.encode('utf-8')):.2%})")
+
+        final_flat = np.empty(flat_ids.shape, dtype=np.int32)
+        final_lengths = np.empty(len(lengths), dtype=np.int32)
+        two_max_pairs.get_current_data(final_flat, final_lengths)
+
+        if verbose:
+            # Reconstruct the valid portion using final_lengths
+            total_tokens = int(final_lengths.sum())
+            print(f"Final token count: {total_tokens} "
+                f"({total_tokens / original_bytes:.2%} compression ratio)")
 
     
     def __encode_chunk__(self, tokens):
