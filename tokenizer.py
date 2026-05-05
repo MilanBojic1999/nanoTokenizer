@@ -8,7 +8,7 @@ import base64
 import multiprocessing
 from functools import reduce
 from concurrent.futures import ThreadPoolExecutor
-# import two_max_pairs
+import two_max_pairs
 import numpy as np
 from typing import List, Dict, Tuple
 import atexit
@@ -327,7 +327,7 @@ class RegexTokenizer:
         text_chunks = re.findall(self.tiktoken_pat, text)
         ids = [list(ch.encode("utf-8")) for ch in text_chunks]
         original_bytes = len(ids)
-        
+
         flat_ids, offsets, lengths = self._build_csr(ids)
 
         number_of_merges = vocab_size-256
@@ -528,8 +528,8 @@ if __name__ == "__main__":
     # text = text[:2**15]
     text = text[:64]
     
-    # tokenzer = RegexTokenizer(training_data=text)
-    tokenzer = RegexTokenizer(True, dict_path="./token_small_rs")
+    tokenzer = RegexTokenizer(training_data=text)
+    # tokenzer = RegexTokenizer(True, dict_path="./token_small_rs")
 
     # for idx, byt in tokenzer.__vocab__.items():
     #     print(f"{idx} -->  ||{byt.decode("utf-8",errors="replace")}||")

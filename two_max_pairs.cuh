@@ -9,13 +9,14 @@
 #define BIT_MASK 0x3FFF  // Mask for 14-bit tokens
 #define BIT_OFFSET 14
 
-extern "C" void allocate_cuda_elemets(int* data,       // Flattened list of all bites
+extern "C" void allocate_elemets(int* data,       // Flattened list of all bites
                              const int* offsets,    // Start of each chunk
                              const int* lengths,    // Length of each chunk
                              const int num_elements, // Number of elements
-                             const int num_chunks, // Number of chunks
+                             const int num_chunks // Number of chunks
 );
-extern "C" void free_cuda_elemets();
+
+extern "C" void free_elemets();
 extern "C" void get_data(int* data, int* num_elements);
 extern "C" void get_offsets(int* offsets);
 extern "C" void get_lengths(int* lengths);
