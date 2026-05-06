@@ -109,10 +109,27 @@ extern "C" void allocate_elemets(int* data,       // Flattened list of all bites
         }
 
         cudaSetDevice(i);
-        cudaMalloc(&gpu_states[i].d_data, gpu_num_elements * sizeof(int));
-        cudaMalloc(&gpu_states[i].d_offsets, gpu_num_chunks * sizeof(int));
-        cudaMalloc(&gpu_states[i].d_lengths, gpu_num_chunks * sizeof(int));
-        cudaMalloc(&gpu_states[i].d_pairs_counter, MAX_PAIR_KEY * sizeof(pair_int));
+        cudaError_t err;
+        err = cudaMalloc(&gpu_states[i].d_data, gpu_num_elements * sizeof(int));
+        if (err != cudaSuccess) {
+            fprintf(stderr, "Failed to allocate d_data on GPU %d: %s\n", i, cudaGetErrorString(err));
+            // handle gracefully
+        }
+        err = cudaMalloc(&gpu_states[i].d_offsets, gpu_num_chunks * sizeof(int));
+        if (err != cudaSuccess) {
+            fprintf(stderr, "Failed to allocate d_offsets on GPU %d: %s\n", i, cudaGetErrorString(err));
+            // handle gracefully
+        }
+        err = cudaMalloc(&gpu_states[i].d_lengths, gpu_num_chunks * sizeof(int));
+        if (err != cudaSuccess) {
+            fprintf(stderr, "Failed to allocate d_lengths on GPU %d: %s\n", i, cudaGetErrorString(err));
+            // handle gracefully
+        }
+        err = cudaMalloc(&gpu_states[i].d_pairs_counter, MAX_PAIR_KEY * sizeof(pair_int));
+        if (err != cudaSuccess) {
+            fprintf(stderr, "Failed to allocate d_pairs_counter on GPU %d: %s\n", i, cudaGetErrorString(err));
+            // handle gracefully
+        }
 
         cudaMemcpy(gpu_states[i].d_data, data + gpu_elem_start, gpu_num_elements * sizeof(int), cudaMemcpyHostToDevice);
 
@@ -204,7 +221,7 @@ __global__ void count_pair_frequencies_kernel(
     // printf("Thread %d processing chunk %d (GridDim (%d %d), BlockDim (%d %d))\n", threadIdx.x, chunk_id, gridDim.x, gridDim.y, blockDim.x, blockDim.y);
 
     if (chunk_id >= num_chunks) {
-        atomicAdd(&pair_counts[chunk_id], -1.0*chunk_id);
+        // atomicAdd(&pair_counts[chunk_id], -1.0*chunk_id);
         return;
     }
 
@@ -215,9 +232,9 @@ __global__ void count_pair_frequencies_kernel(
     for (int i = 0; i < length - 1; ++i) {
         int a = data[offset + i];
         int b = data[offset + i + 1];
-        // if (a < 0 || b < 0) {
-        //     break; // Skip negative values
-        // }
+        if (a < 0 || b < 0) {
+            break; // Skip negative values
+        }
         int key = (a << BIT_OFFSET) | b;  // Flatten (a,b) into single int key
 
         atomicAdd(&pair_counts[key], 1);
@@ -243,6 +260,7 @@ void count_pair_frequencies(int* max_pair, // Max pair to replace with new value
     for (int i = 0; i < number_of_gpus; ++i) {
         int gpu_num_chunks = gpu_states[i].end_chunk - gpu_states[i].start_chunk;
         if (gpu_num_chunks <= 0) continue;
+        cudaSetDevice(i);
         int threadsPerBlock = 256;
         int blocksPerGrid = (gpu_num_chunks + threadsPerBlock - 1) / threadsPerBlock;
         // std::cout << "Launching kernel with\n" ;
@@ -380,10 +398,18 @@ void replace_single_most_frequent(int* pair, // Pair to replace
         if (num_chunks_for_gpu == 0) continue;
 
         int *d_pair, *d_new_value;
-
-        cudaMalloc(&d_pair, 2 * sizeof(int));
-        cudaMalloc(&d_new_value, sizeof(int));
-        // cudaMalloc(&num_chunks_gpu, sizeof(int));
+        cudaError_t err;
+        
+        err = cudaMalloc(&d_pair, 2 * sizeof(int));
+        if (err != cudaSuccess) {
+            fprintf(stderr, "Failed to allocate d_pair on GPU %d: %s\n", i, cudaGetErrorString(err));
+            // handle gracefully
+        }
+        err = cudaMalloc(&d_new_value, sizeof(int));
+        if (err != cudaSuccess) {
+            fprintf(stderr, "Failed to allocate d_new_value on GPU %d: %s\n", i, cudaGetErrorString(err));
+            // handle gracefully
+        }
 
         cudaMemcpy(d_pair, pair, 2 * sizeof(int), cudaMemcpyHostToDevice);
         cudaMemcpy(d_new_value, &new_value, sizeof(int), cudaMemcpyHostToDevice);
@@ -396,6 +422,7 @@ void replace_single_most_frequent(int* pair, // Pair to replace
         replace_single_most_frequent_kernel<<<blocksPerGrid, threadsPerBlock, 0, streams[i]>>>(gpu_states[i].d_data, gpu_states[i].d_offsets, gpu_states[i].d_lengths, num_chunks_for_gpu, d_pair, d_new_value);
         compact_kernel<<<blocksPerGrid, threadsPerBlock, 0, streams[i]>>>(gpu_states[i].d_data, gpu_states[i].d_offsets, gpu_states[i].d_lengths, num_chunks_for_gpu);
 
+        cudaStreamSynchronize(streams[i]);
         cudaFree(d_pair);
         cudaFree(d_new_value);
         // cudaFree(num_chunks_gpu);
@@ -478,11 +505,19 @@ int main(int argc, char *argv[]) {
     std::cout << "You have entered " << argc << " arguments:" << std::endl;
 
     std::string filename;
+    int number_of_loops;
     if (argc > 1) {
         filename = argv[1];
+        if(argc > 1){
+           number_of_loops = std::stoi(argv[2]);
+        } else {
+            number_of_loops = 2;
+        }
+        
         std::cout << "Using provided filename: " << filename << std::endl;
     } else {
         filename = "test_input_redux_large.txt";
+        number_of_loops = 2;
         std::cout << "No additional arguments provided." << std::endl;
     }
 
@@ -521,27 +556,20 @@ int main(int argc, char *argv[]) {
     std::vector<int> most_frequent_pair = {0, 0};
     int max_frequency = 0;
 
-    count_pair_frequencies(most_frequent_pair.data(), &max_frequency);
-
-    std::cout << "Most frequent pair: ("
-              << most_frequent_pair[0] << ", "
-              << most_frequent_pair[1]
-              << ") with frequency " << max_frequency << "\n";
-
     std::cout << "Modified IDID:\n";
-    int new_token_id = 257; // or whatever your next token ID logic is
-    replace_single_most_frequent(most_frequent_pair.data(), new_token_id);
+    int new_token_id; // or whatever your next token ID logic is
 
-    count_pair_frequencies(most_frequent_pair.data(), &max_frequency);
+    for(int i = 0; i < number_of_loops; ++i) {
+        count_pair_frequencies(most_frequent_pair.data(), &max_frequency);
 
-    std::cout << "Most frequent pair: ("
-              << most_frequent_pair[0] << ", "
-              << most_frequent_pair[1]
-              << ") with frequency " << max_frequency << "\n";
-
-    std::cout << "Modified IDID:\n";
-    new_token_id = 258; // or whatever your next token ID logic is
-    replace_single_most_frequent(most_frequent_pair.data(), new_token_id);
+        std::cout << "Most frequent pair:" << i << " ("
+                << most_frequent_pair[0] << ", "
+                << most_frequent_pair[1]
+                << ") with frequency " << max_frequency << "\n";
+        
+        new_token_id = 257+i; // or whatever your next token ID logic is
+        replace_single_most_frequent(most_frequent_pair.data(), new_token_id);
+    }
 
     // Copy results back from GPU
     std::vector<int> out_data(host_data.size());

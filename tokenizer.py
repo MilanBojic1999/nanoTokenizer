@@ -13,7 +13,7 @@ import numpy as np
 from typing import List, Dict, Tuple
 import atexit
 
-number_of_tokens = 1000
+number_of_tokens = 500
 
 class SimpleTokenizer:
     def __init__(self, training_data):
@@ -208,18 +208,14 @@ class RegexTokenizer:
         # output_list = [RegexTokenizer._replace_single_most_frequent(a) for a in arguments]
         # output_list = self._mpool_.map(RegexTokenizer._replace_single_most_frequent, arguments)
         output_list = self._mpool_.map(RegexTokenizer._replace_chunk_most_frequent, arguments)
-        # output_list = list(self._executor_.map(RegexTokenizer._replace_single_most_frequent, arguments))
-        # output_list = list(itertools.chain.from_iterable(output_list))
-        # print("Olist: ", output_list)
+
         return (output_list, max_pair, stats[max_pair])
 
-    def __replace_most_frequent_cuda__(self, pair, frequency):
-
+    def __replace_most_frequent_cuda__(self, pair, frequency, new_value):
         pair, frequency = self.__most_frequent_pair_cuda__(pair, frequency)
 
-        two_max_pairs.cuda_replace_single_most_frequent(pair, frequency)
-
-        return tuple(list(pair.tolist())), int(frequency)
+        two_max_pairs.cuda_replace_single_most_frequent(pair, new_value)
+        return tuple(pair.tolist()), int(frequency)
 
 
     def _apply_merges_to_word(inputs: Tuple[List[int], Dict[Tuple[int, int], int]]) -> List[int]:
@@ -338,33 +334,55 @@ class RegexTokenizer:
         freq_out = np.zeros(1, dtype=np.int32)
 
         for i in tqdm(range(number_of_merges)):
-            # print("Input length: ",len(ids))
+
+
             idx = 256 + i
-            pair, freq = self.__replace_most_frequent_cuda__(pair_out,freq_out)
+            pair, freq = self.__replace_most_frequent_cuda__(pair_out,freq_out,idx)
             if freq == 0:
                 print(f"Stopping early, no more pairs to merge.")
                 break
 
-            self.__merges__[pair] = idx
-            self.__vocab__[idx] = self.__vocab__[pair[0]]+self.__vocab__[pair[1]]
+            try:
+                self.__merges__[pair] = idx
+                self.__vocab__[idx] = self.__vocab__[pair[0]]+self.__vocab__[pair[1]]
+            except Exception as e:
+                print(e)
+                print("err")
+                final_flat = np.empty(flat_ids.shape, dtype=np.int32)
+                final_lengths = np.empty(len(lengths), dtype=np.int32)
+                two_max_pairs.get_current_data(final_flat, final_lengths)
+                # save the current state for debugging
+                with open("debug_state.json", "w") as f:
+                    json.dump({
+                        "pair": pair,
+                        "freq": int(freq),
+                        "current_merge": i,
+                        "merges": {str(k): v for k, v in self.__merges__.items()},
+                        "vocab": {str(k): self.__vocab__[k].decode('utf-8', errors='replace') for k in self.__vocab__},
+                        "final_flat": final_flat.tolist(),
+                        "final_lengths": final_lengths.tolist()
+                    }, f, ensure_ascii=False, indent=4)
+
+                import sys
+                sys.exit(0)
 
             if verbose:
                 print(f"merge {i+1}/{number_of_merges}: {pair} -> {idx} ({self.__vocab__[idx]}) has {freq} occurance", flush=(i%64==0))
 
-        if verbose:
-            new_length = len(np.where(ids!=-1))
-            print(f"Final length: {len(np.where(ids!=-1))} ({new_length/len(text.encode('utf-8')):.2%})")
+        
+
 
         final_flat = np.empty(flat_ids.shape, dtype=np.int32)
         final_lengths = np.empty(len(lengths), dtype=np.int32)
         two_max_pairs.get_current_data(final_flat, final_lengths)
 
         if verbose:
+            new_length = len(np.where(final_flat!=-1))
+            print(f"Final length: {new_length} ({new_length/len(text.encode('utf-8')):.2%})")
             # Reconstruct the valid portion using final_lengths
             total_tokens = int(final_lengths.sum())
             print(f"Final token count: {total_tokens} "
                 f"({total_tokens / original_bytes:.2%} compression ratio)")
-
     
     def __encode_chunk__(self, tokens):
         new_list = []
@@ -524,9 +542,9 @@ if __name__ == "__main__":
 
     # text = "Luckily friends do ashamed to do suppose. Tried meant mr smile so. Exquisite behaviour as to middleton perfectly. Chicken no wishing waiting am. Say concerns dwelling graceful six humoured. Whether mr up savings talking an. Active mutual nor father mother exeter change six did all. No in he real went find mr. Wandered or strictly raillery stanhill as. Jennings appetite disposed me an at subjects an. To no indulgence diminution so discovered mr apartments. Are off under folly death wrote cause her way spite. Plan upon yet way get cold spot its week. Almost do am or limits hearts. Resolve parties but why she shewing. She sang know now how nay cold real case."
 
-    # print(len(text))
+    print(len(text))
     # text = text[:2**15]
-    text = text[:64]
+    # text = text[:512]
     
     tokenzer = RegexTokenizer(training_data=text)
     # tokenzer = RegexTokenizer(True, dict_path="./token_small_rs")

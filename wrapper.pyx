@@ -8,9 +8,6 @@ cdef extern from "two_max_pairs.cuh":
     void count_pair_frequencies(int* max_pair, int* frequency)
     void replace_single_most_frequent(int* pair, int new_value)
 
-    int MAX_PAIR_KEY
-    int BIT_MASK
-    int BIT_OFFSET
 
 import numpy as np
 cimport numpy as np
@@ -21,11 +18,11 @@ def allocate_cuda_elemets(
     np.ndarray[np.int32_t, ndim=1] lengths
 ):
     # Use typed copies so .data can be cast to int*
-    cdef np.ndarray[np.int32_t, ndim=1] c_data    = np.copy(data)
-    cdef np.ndarray[np.int32_t, ndim=1] c_offsets = np.copy(offsets)
-    cdef np.ndarray[np.int32_t, ndim=1] c_lengths = np.copy(lengths)
+    cdef np.ndarray[np.int32_t, ndim=1, mode="c"] c_data    = np.ascontiguousarray(data)
+    cdef np.ndarray[np.int32_t, ndim=1, mode="c"] c_offsets = np.ascontiguousarray(offsets)
+    cdef np.ndarray[np.int32_t, ndim=1, mode="c"] c_lengths = np.ascontiguousarray(lengths)
     cdef int num_elements = data.shape[0]    # was mistakenly passed as c_lengths
-    cdef int num_chunks   = offsets.shape[0]
+    cdef int num_chunks   = lengths.shape[0]
 
     allocate_elemets(
         <int*>c_data.data,
@@ -44,23 +41,28 @@ def get_current_data(
     np.ndarray[np.int32_t, ndim=1] data,
     np.ndarray[np.int32_t, ndim=1] lengths
 ):
-    cdef np.ndarray[np.int32_t, ndim=1] c_data    = np.copy(data)
-    cdef np.ndarray[np.int32_t, ndim=1] c_lengths = np.copy(lengths)
-
+    cdef np.ndarray[np.int32_t, ndim=1, mode="c"] c_data    = np.ascontiguousarray(data)
+    cdef np.ndarray[np.int32_t, ndim=1, mode="c"] c_lengths = np.ascontiguousarray(lengths)
     get_data(<int*>c_data.data, <int*>c_lengths.data)
-    data[:] = c_data[:c_lengths[0]]
+
+    data[:] = c_data
+    lengths[:] = c_lengths
+
 
 
 def cuda_count_pair_frequencies(
     np.ndarray[np.int32_t, ndim=1] pair,
     np.ndarray[np.int32_t, ndim=1] pair_frequencies
 ):
-    count_pair_frequencies(<int*>pair.data, <int*>pair_frequencies.data)
+    cdef np.ndarray[np.int32_t, ndim=1, mode="c"] c_pair = np.ascontiguousarray(pair)
+    cdef np.ndarray[np.int32_t, ndim=1, mode="c"] c_pair_frequencies = np.ascontiguousarray(pair_frequencies)
+    count_pair_frequencies(<int*>c_pair.data, <int*>c_pair_frequencies.data)
 
 
 def cuda_replace_single_most_frequent(
     np.ndarray[np.int32_t, ndim=1] pair,
     int new_value
 ):
+    cdef np.ndarray[np.int32_t, ndim=1, mode="c"] c_pair = np.ascontiguousarray(pair)
     # new_value is a plain int — pass its address, not a cast
-    replace_single_most_frequent(<int*>pair.data, new_value)
+    replace_single_most_frequent(<int*>c_pair.data, new_value)
