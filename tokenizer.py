@@ -331,7 +331,7 @@ class RegexTokenizer:
         flat_ids, offsets, lengths = self._build_csr(ids)
 
         number_of_merges = vocab_size-256
-        two_max_pairs.allocate_cuda_elemets(flat_ids, offsets, lengths, len(flat_ids), len(ids))
+        two_max_pairs.allocate_cuda_elemets(flat_ids, offsets, lengths)
         atexit.register(two_max_pairs.free_cuda_elemets)
         
         pair_out = np.zeros(2, dtype=np.int32)
@@ -340,7 +340,7 @@ class RegexTokenizer:
         for i in tqdm(range(number_of_merges)):
             # print("Input length: ",len(ids))
             idx = 256 + i
-            ids, pair, freq = self.__replace_most_frequent_cuda__(ids,idx)
+            pair, freq = self.__replace_most_frequent_cuda__(pair_out,freq_out)
             if freq == 0:
                 print(f"Stopping early, no more pairs to merge.")
                 break
