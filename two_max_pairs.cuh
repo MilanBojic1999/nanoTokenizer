@@ -5,9 +5,9 @@
 #include <thrust/device_ptr.h>
 #include <thrust/extrema.h>
 
-#define MAX_PAIR_KEY 268435456  // Assuming 14-bit tokens: 16384 * 16384
-#define BIT_MASK 0x3FFF  // Mask for 14-bit tokens
-#define BIT_OFFSET 14
+#define MAX_PAIR_KEY 1073741824  // Assuming 14-bit tokens: 16384 * 16384, or 15-bit tokens 32768 * 32768
+#define BIT_MASK 0x7FFF  // Mask for 14-bit tokens 0x3FFF, or 0x7FFF for 15-bit tokens
+#define BIT_OFFSET 15
 
 extern "C" void allocate_elemets(int* data,       // Flattened list of all bites
                              const int* offsets,    // Start of each chunk

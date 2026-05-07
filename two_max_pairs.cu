@@ -10,11 +10,9 @@
 #include "two_max_pairs.cuh"
 
 
-#define MAX_PAIR_KEY 268435456  // Assuming 14-bit tokens: 16384 * 16384
-#define BIT_MASK 0x3FFF  // Mask for 14-bit tokens
-#define BIT_OFFSET 14
-// #define MAX_PAIR_KEY 1048576  // Assuming 10-bit tokens: 1024 * 1024
-// #define MAX_PAIR_KEY 65536  // Assuming 8-bit tokens: 256 * 256
+#define MAX_PAIR_KEY 1073741824  // Assuming 14-bit tokens: 16384 * 16384, or 15-bit tokens 32768 * 32768
+#define BIT_MASK 0x7FFF  // Mask for 14-bit tokens 0x3FFF, or 0x7FFF for 15-bit tokens
+#define BIT_OFFSET 15
 
 typedef int pair_int;
 
